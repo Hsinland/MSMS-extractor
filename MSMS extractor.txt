@@ -1,0 +1,87 @@
+﻿"""
+This program is used for extracting DNS-DPs/TPs from .mgf files
+"""
+from pyteomics import mgf
+import pandas as pd
+import warnings
+import time
+warnings.filterwarnings("ignore")
+
+# Defining mgf files,export results,save path
+mgf_path = r'X:\XXX\XX\XXX\X.mgf'
+dif_path = r'X:\XXX\XX\XXX\XX.csv'
+save_path = r'X:\XXX\XX\XXX\XXX.csv'
+
+# Defining tolerance of m/z and relative intensity (0~1)
+ppm = 0.01
+i_ratio = 0.1
+
+
+def screen(df, dif_type):
+    result = []
+    for order in [1, 2]:
+        dic = {}
+        for mass in df.loc[:, 'm/z']:
+            for dif_order in dif_type:
+                for index in dif_type[dif_order].index:
+                    mz_diff = dif_type[dif_order][index]
+                    if dif_order == order:
+                        df.loc[:, 'dif'] = df.loc[:, 'm/z'] - mz_diff
+                    else:
+                        df.loc[:, 'dif'] = df.loc[:, 'm/z'] + mz_diff
+                    cell = df.loc[(df.loc[:, 'dif'] >= mass - ppm) & (df.loc[:, 'dif'] <= mass + ppm)]
+                    if not cell.empty:
+                        cell.loc[:, index] = mass
+                        for cell_mass in cell.loc[:, 'm/z']:
+                            if cell_mass in dic:
+                                if index in dic[cell_mass]:
+                                    dic[cell_mass][index].append(mass)
+                                else:
+                                    dic[cell_mass][index] = [mass]
+                            else:
+                                dic[cell_mass] = {index: [mass]}
+        if dic:
+            for i in dic:
+                if len(dic[i]) >= 2:
+                    part = pd.concat([pd.DataFrame(dic[i][j], columns=[j]) for j in dic[i]], axis=1)
+                    part = part.assign(C_X=i, order=order, count=part.count(axis=1))
+                    result.append(part)
+
+    if result:
+        return pd.concat(result, axis=0)
+
+
+def main():
+    start_time = time.time()
+    result = []
+    dif_info = pd.read_csv(dif_path)
+    dif_info.set_index('index', inplace=True)
+    dif_type = {
+        1: dif_info.loc[dif_info.loc[:, 'type'] == 'left', 'difference'],
+        2: dif_info.loc[dif_info.loc[:, 'type'] == 'right', 'difference']
+    }
+
+    count = 0
+    for spectrum in mgf.read(mgf_path):     # [261:263]:
+        count += 1
+        print(f'\rcurrent progress：{count}', end='')
+        df = pd.DataFrame([spectrum['m/z array'], spectrum['intensity array']]).T
+        df.columns = ['m/z', 'intensity']
+        i_max = df.loc[:, 'intensity'].max()
+        df = df.loc[df.loc[:, 'intensity'] / i_max >= i_ratio]
+
+        label = screen(df, dif_type)
+        if label is not None:
+            label.loc[:, 'pepmass'] = spectrum['params']['pepmass'][0]
+            label.loc[:, 'rt'] = spectrum['params']['rtinseconds']
+            result.append(label)
+    result = pd.concat(result)
+    result.columns = result.columns.astype(str)
+    result = result.loc[:, sorted(result.columns)]
+    result.to_csv(save_path, index=False)
+    end_time = time.time()
+    print(round(end_time - start_time, 4))
+
+
+if __name__ == '__main__':
+    main()
